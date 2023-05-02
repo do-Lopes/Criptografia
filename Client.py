@@ -6,34 +6,52 @@ import time
 import threading
 import select
 import traceback
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.fernet import Fernet
+import time
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
+from Crypto.Cipher import AES, PKCS1_OAEP
 
 state = True
 chaves = []
+mensagens = []
+message = dict
 
+key = RSA.generate(2048)
+private_key = key.export_key()
+public_key = key.publickey().export_key()
+aes_key = get_random_bytes(32)        
+cipher_aes = AES.new(aes_key, AES.MODE_GCM)
 
-private_key = rsa.generate_private_key(
-    public_exponent=65537,
-    key_size=2048
-    )
+cipher_rsa = PKCS1_OAEP.new(RSA.import_key(private_key))
+
 
 class Server(threading.Thread):
     def initialise(self, receive):
         self.receive = receive
 
     def run(self):
+        global chaves
+        global message
         lis = []
         lis.append(self.receive)
         while 1:
             read, write, err = select.select(lis, [], [])
             for item in read:
-                try:
-                    s = item.recv(1024)
-                    if s != '':
-                        chunk = s
-                        print(chunk.decode() + '\n>>')
+                try:           
+                    if len(chaves) == 0:
+                        s = item.recv(1024)
+                        chaves.append(s.decode())
+                        chunk = ""
+                    else:   
+                        s = item.recv(1024)                        
+                        x = s.decode('UTF-8')       
+                        if x.find('-----') == 0:
+                            s = ''
+                        if s != '':
+                            #aki esta errrado, a msg tem q ser descriptografada com a chave publica no array chaves[0]
+                            decrypted_message_rsa = cipher_aes.decrypt_and_verify(*message.keys(), *message.values())
+                            decrypted_message = cipher_rsa.decrypt(decrypted_message_rsa)
+                            print(decrypted_message.decode() + '\n>>')
                 except:
                     traceback.print_exc(file=sys.stdout)
                     break
@@ -48,8 +66,6 @@ class Client(threading.Thread):
         # print "Sent\n"
 
     def run(self):
-        # global state
-        # print(state)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         try:
@@ -59,8 +75,6 @@ class Client(threading.Thread):
             print("Error")
             return 1
         print("Connecting\n")
-        # if state:
-        #     state = False
         s = ''
         self.connect(host, port)
         print("Connected\n")      
@@ -72,51 +86,36 @@ class Client(threading.Thread):
         srv.daemon = True
         print("Starting service")
         srv.start()
-        
-        #aki a chave publica e privada é criada
-        #------------------------------------------
-        private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048
-        )
 
-        public_key = private_key.public_key()
-        #------------------------------------------
+        global captura_msg, captura_tag
 
-        chaves.append(private_key)
-        chaves.append(public_key)
+        # def EnviaChaves():
+        #     time.sleep(10)
+        #     global chaves
+        #     if len(chaves) == 0 or len(chaves) == 1:
+        #         msg = str(public_key)
+        #         data = msg.encode()
+        #         print("chave 1 enviada")
+        #         self.client(host, port, data)
 
-        print(chaves)
+        def EnviaChaves():
+            global chaves
+            time.sleep(10)            
+            if len(chaves) == 0 or len(chaves) == 1:
+                msg = str(public_key)
+                encrypted_message = cipher_rsa.encrypt(msg.encode('utf-8'))
+                captura_msg, captura_tag = cipher_aes.encrypt_and_digest(encrypted_message)
+                data = {captura_msg: captura_tag}
+                print("chave 1 enviada")
+                self.client(host, port, data)
+               
 
-#         key = Fernet.generate_key()
-
-# # Crie um objeto Fernet com a chave gerada
-#         fernet = Fernet(key)
-
-# # Dados a serem criptografados
-#         data = chaves
-
-# # Criptografe os dados
-#         encrypted_data = fernet.encrypt(data)
-
-# # Salve os dados criptografados em um arquivo
-#         with open('dados_criptografados.txt', 'wb') as file:
-#             file.write(encrypted_data)
-            
-
-
-        #chaves.append(private_key)preciso fazer esses dados persistirem para o segundo cliente
-        #nesse ponto as chaves publicas de ambos os clientes ja devem estar entregues
-        
-        
-        #em seguida é necessário fazer a chave simétrica
-
-        # apos as chaves simétricas serem feitas, é necessário criptografar a C.S. com a chave 
-        # publica do destino, descriptografar ela e fazer seu hash. Ao mesmo tempo, é feito
-        # o hash da chave simétrica e criptografada pela chave privada do remetente, descriptografa ela e faz o hash, compara os dois hash pra confirmar a confidencialidade
-
+        EnviaChaves()        
+        print("Conectando..")
+        time.sleep(5)
         while 1:
-            # print "Waiting for message\n"
+            print("Conectado")
+            global message
             msg = input('>>')
             if msg == 'exit':
                 break
@@ -124,8 +123,11 @@ class Client(threading.Thread):
                 continue
             # print "Sending\n"
             msg = user_name + ': ' + msg
-            data = msg.encode()#aki a mensagem precisa ser codificada utilizando a chave simétrica
-            self.client(host, port, data)
+            encrypted_message = cipher_rsa.encrypt(msg.encode('utf-8'))
+            captura_msg, captura_tag = cipher_aes.encrypt_and_digest(encrypted_message)
+            message = {captura_msg: captura_tag}
+            self.client(host, port, message)
+            message.clear()
         return (1)
 
 
